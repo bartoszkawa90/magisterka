@@ -16,3 +16,4 @@ for t, name in zip([v1, v2, v_sum, v_res], ['v1', 'v2', 'v_sum', 'v_res']):
 # how to count gradients for graph
 v_res.backward()
 print(f'Values of gradients counted for created graph  {v1.grad}')
+print(f'We can see that there is no grad values for v2 {v2.grad}')
