@@ -38,10 +38,11 @@ def iterate_batches(env, net, batch_size):
     batch = []  # variable to store packs (lists of Episode class instances)
     episode_reward = 0.0  # reward counter
     episode_steps = []  # list of steps (class EpisodeSteps objects)
-    obs = env.reset()
+    obs = env.reset()[0]  # needed for newer version of gym, reset returns additional dict {}
     sm = nn.Softmax(dim=1)  # softmax layer will be used to get probabilities from data collected from net
 
     while True:
+        #TODO obs_v = t.FloatTensor([obs])
         obs_v = t.FloatTensor([obs])
         act_probs_v = sm(net(obs_v))
         act_probs = act_probs_v.data.numpy()[0]  # we want to get data in form of numpy array instead of tensor
@@ -55,7 +56,7 @@ def iterate_batches(env, net, batch_size):
             batch.append(e)
             episode_reward = 0.0
             episode_steps = []
-            next_obs = env.reset()
+            next_obs = env.reset()[0]  # needed for newer version of gym, reset returns additional dict {}
             if len(batch) == batch_size:
                 yield batch
                 batch = []
@@ -64,9 +65,10 @@ def iterate_batches(env, net, batch_size):
 
 def filter_batch(batch, percentile):
     """Most important element of cross entropy method
-       Function counts reward bound based on episodes, we need this to filter elite opisodes"""
+       Function counts reward bound based on episodes, we need this to filter elite episodes"""
     rewards = list(map(lambda s: s.reward, batch))
     reward_bound = np.percentile(rewards, percentile)  # numpy function which counts reward bound
+                                                       # smallest reward from (100-percentile) of best episodes
     reward_mean = float(np.mean(rewards))
     train_obs = []
     train_act = []
@@ -90,7 +92,7 @@ if __name__ == "__main__":
     net = Net(obs_size, HIDDEN_SIZE, n_actions)
     objective = nn.CrossEntropyLoss()
     optimizer = optim.Adam(params=net.parameters(), lr=0.01)
-    writer = SummaryWriter(comment="-cartpole")
+    # writer = SummaryWriter(comment="-cartpole")
 
     # start learning loop
     for iter_no, batch in enumerate(iterate_batches(env, net, BATCH_SIZE)):
@@ -102,11 +104,17 @@ if __name__ == "__main__":
         optimizer.step()
         print("%d: loss=%.3f, reward_mean=%.1f, rw_bound=%.1f" % (
             iter_no, loss_v.item(), reward_m, reward_b))
-        writer.add_scalar("loss", loss_v.item(), iter_no)
-        writer.add_scalar("reward_bound", reward_b, iter_no)
-        writer.add_scalar("reward_mean", reward_m, iter_no)
+        # writer.add_scalar("loss", loss_v.item(), iter_no)
+        # writer.add_scalar("reward_bound", reward_b, iter_no)
+        # writer.add_scalar("reward_mean", reward_m, iter_no)
         if reward_m > 199:
             print("Solved!")
             break
-    writer.close()
+    # writer.close()
+
+
+""" IMPORTANT NOTES
+    Understandable but need to verify why backward() on loss_v  and  what does optimizer.step()
+    
+"""
     
