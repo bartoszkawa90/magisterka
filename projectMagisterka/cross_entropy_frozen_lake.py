@@ -26,6 +26,11 @@ class Net(nn.Module):
 
 
 class DiscreteOneHotWrapper(gym.ObservationWrapper):
+    """
+    Wrapper for env because, FrozenLake provices numbers from 0 to 15 as obs and from 0 to 3 as actions,
+    for actions it is fine but current network cannot work with this kind of observations so we have to change form
+    of received obs by using wrapper, this way we can use same network
+    """
     def __init__(self, env):
         super(DiscreteOneHotWrapper, self).__init__(env)
         assert isinstance(env.observation_space, gym.spaces.Discrete)
@@ -112,7 +117,7 @@ if __name__ == "__main__":
         optimizer.step()
         print("%d: loss=%.3f, reward_mean=%.1f, rw_bound=%.1f" % (
             iter_no, loss_v.item(), reward_m, reward_b))
-        if reward_m > 199:
+        if reward_m > 199 or iter_no > 200:
             print("Solved!")
             break
     # writer.close()
