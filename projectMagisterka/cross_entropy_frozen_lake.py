@@ -20,14 +20,23 @@ class Net(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_size, n_actions)
         )
-        # instead of using softmax() function at the end and then count loss -> we want to use nn.CrossEntropyLoss
-        # because it uses softmax function and counts loss but instead of first possibility this way we get
-        # more numeric stable expression
-        # Downside of this solution is that to probabilities from network we have to use softmax() each time
-        # TODO dopytac czym to się różni tak właściwie że jest niby to samo ale jest bardziej stabilne numerycznie
 
     def forward(self, x):
         return self.net(x)
+
+
+class DiscreteOneHotWrapper(gym.ObservationWrapper):
+    def __init__(self, env):
+        super(DiscreteOneHotWrapper, self).__init__(env)
+        assert isinstance(env.observation_space, gym.spaces.Discrete)
+        shape = (env.observation_space.n, )
+        self.observation_space = gym.spaces.Box(
+            0.0, 1.0, shape, dtype=np.float32)
+
+    def observation(self, observation):
+        res = np.copy(self.observation_space.low)
+        res[observation] = 1.0
+        return res
 
 
 Episode = namedtuple('Episode', field_names=['reward', 'steps'])
@@ -42,7 +51,7 @@ def iterate_batches(env, net, batch_size):
     sm = nn.Softmax(dim=1)  # softmax layer will be used to get probabilities from data collected from net
 
     while True:
-        #TODO obs_v = t.FloatTensor([obs])
+        # TODO obs_v = t.FloatTensor([obs])
         obs_v = t.FloatTensor([obs])
         act_probs_v = sm(net(obs_v))
         act_probs = act_probs_v.data.numpy()[0]  # we want to get data in form of numpy array instead of tensor
@@ -68,7 +77,7 @@ def filter_batch(batch, percentile):
        Function counts reward bound based on episodes, we need this to filter elite episodes"""
     rewards = list(map(lambda s: s.reward, batch))
     reward_bound = np.percentile(rewards, percentile)  # numpy function which counts reward bound
-                                                       # smallest reward from (100-percentile) of best episodes
+    # smallest reward from (100-percentile) of best episodes
     reward_mean = float(np.mean(rewards))
     train_obs = []
     train_act = []
@@ -84,7 +93,7 @@ def filter_batch(batch, percentile):
 
 if __name__ == "__main__":
     # load environment
-    env = gym.make('CartPole-v1')
+    env = DiscreteOneHotWrapper(gym.make('FrozenLake-v1'))
     obs_size = env.observation_space.shape[0]
     n_actions = env.action_space.n
 
@@ -92,7 +101,6 @@ if __name__ == "__main__":
     net = Net(obs_size, HIDDEN_SIZE, n_actions)
     objective = nn.CrossEntropyLoss()
     optimizer = optim.Adam(params=net.parameters(), lr=0.01)
-    # writer = SummaryWriter(comment="-cartpole")
 
     # start learning loop
     for iter_no, batch in enumerate(iterate_batches(env, net, BATCH_SIZE)):
@@ -104,17 +112,8 @@ if __name__ == "__main__":
         optimizer.step()
         print("%d: loss=%.3f, reward_mean=%.1f, rw_bound=%.1f" % (
             iter_no, loss_v.item(), reward_m, reward_b))
-        # writer.add_scalar("loss", loss_v.item(), iter_no)
-        # writer.add_scalar("reward_bound", reward_b, iter_no)
-        # writer.add_scalar("reward_mean", reward_m, iter_no)
         if reward_m > 199:
             print("Solved!")
             break
     # writer.close()
 
-
-""" IMPORTANT NOTES
-    Understandable but need to verify why backward() on loss_v  and  what does optimizer.step()
-    
-"""
-    
