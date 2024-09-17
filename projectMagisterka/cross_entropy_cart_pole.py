@@ -111,10 +111,4 @@ if __name__ == "__main__":
             print("Solved!")
             break
     # writer.close()
-
-
-""" IMPORTANT NOTES
-    Understandable but need to verify why backward() on loss_v  and  what does optimizer.step()
-    
-"""
     
