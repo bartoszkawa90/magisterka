@@ -8,9 +8,8 @@ from torch import optim
 
 
 HIDDEN_SIZE = 128  # number of hidden neurons
-BATCH_SIZE = 100  # number of episodes
+BATCH_SIZE = 16  # number of episodes
 PERCENTILE = 70  # we do not consider 70% of worst episodes, we consider only 30% best episodes
-GAMMA = 0.90  # stopa dyskontowa
 
 
 class Net(nn.Module):
@@ -57,6 +56,7 @@ def iterate_batches(env, net, batch_size):
     sm = nn.Softmax(dim=1)  # softmax layer will be used to get probabilities from data collected from net
 
     while True:
+        # TODO obs_v = t.FloatTensor([obs])
         obs_v = t.FloatTensor([obs])
         act_probs_v = sm(net(obs_v))
         act_probs = act_probs_v.data.numpy()[0]  # we want to get data in form of numpy array instead of tensor
@@ -80,19 +80,20 @@ def iterate_batches(env, net, batch_size):
 def filter_batch(batch, percentile):
     """Most important element of cross entropy method
        Function counts reward bound based on episodes, we need this to filter elite episodes"""
-    filter_fun = lambda s: s.reward * (GAMMA ** len(s.steps))
-    disc_rewards = list(map(filter_fun, batch))
-    reward_bound = np.percentile(disc_rewards, percentile)  # numpy function which counts reward bound
+    rewards = list(map(lambda s: s.reward, batch))
+    reward_bound = np.percentile(rewards, percentile)  # numpy function which counts reward bound
     # smallest reward from (100-percentile) of best episodes
+    reward_mean = float(np.mean(rewards))
     train_obs = []
     train_act = []
-    elite_batch = []
-    for example, discounted_reward in zip(batch, disc_rewards):
-        if discounted_reward > reward_bound:
-            train_obs.extend(map(lambda step: step.observation, example.steps))
-            train_act.extend(map(lambda step: step.action, example.steps))
-            elite_batch.append(example)
-    return elite_batch, train_obs, train_act, reward_bound
+    for reward, steps in batch:
+        if reward < reward_bound:
+            continue
+        train_obs.extend(map(lambda step: step.observation, steps))
+        train_act.extend(map(lambda step: step.action, steps))
+    train_obs_v = t.FloatTensor(train_obs)
+    train_act_v = t.LongTensor(train_act)
+    return train_obs_v, train_act_v, reward_bound, reward_mean  # we change data back to torch tensors and return
 
 
 if __name__ == "__main__":
@@ -104,28 +105,20 @@ if __name__ == "__main__":
     # choose network, objective function and optimizer
     net = Net(obs_size, HIDDEN_SIZE, n_actions)
     objective = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(params=net.parameters(), lr=0.001)
+    optimizer = optim.Adam(params=net.parameters(), lr=0.01)
 
-    full_batch = []
     # start learning loop
     for iter_no, batch in enumerate(iterate_batches(env, net, BATCH_SIZE)):
-        reward_mean = float(np.mean(list(map(lambda s: s.reward, batch))))
-        full_batch, obs, acts, reward_bound = filter_batch(full_batch + batch, PERCENTILE)
-        if not full_batch:
-            continue
-        obs_v = t.FloatTensor(obs)
-        acts_v = t.LongTensor(acts)
-        full_batch = full_batch[-500:]
-
+        obs_v, acts_v, reward_b, reward_m = filter_batch(batch, PERCENTILE)
         optimizer.zero_grad()
         action_scores_v = net(obs_v)
         loss_v = objective(action_scores_v, acts_v)
         loss_v.backward()
         optimizer.step()
-        print("%d: loss=%.3f, rw_mean=%.3f, "
-              "rw_bound=%.3f, batch=%d" % (
-            iter_no, loss_v.item(), reward_mean,
-            reward_bound, len(full_batch)))
-        if reward_mean > 0.8:
+        print("%d: loss=%.3f, reward_mean=%.1f, rw_bound=%.1f" % (
+            iter_no, loss_v.item(), reward_m, reward_b))
+        if reward_m > 199 or iter_no > 200:
             print("Solved!")
             break
+    # writer.close()
+

@@ -2,6 +2,7 @@ from collections import namedtuple
 import gym
 import torch as t
 from tensorboardX import SummaryWriter
+import random
 from torch import nn
 import numpy as np
 from torch import optim
@@ -9,7 +10,7 @@ from torch import optim
 
 HIDDEN_SIZE = 128  # number of hidden neurons
 BATCH_SIZE = 100  # number of episodes
-PERCENTILE = 70  # we do not consider 70% of worst episodes, we consider only 30% best episodes
+PERCENTILE = 30  # we do not consider 70% of worst episodes, we consider only 30% best episodes
 GAMMA = 0.90  # stopa dyskontowa
 
 
@@ -97,7 +98,14 @@ def filter_batch(batch, percentile):
 
 if __name__ == "__main__":
     # load environment
-    env = DiscreteOneHotWrapper(gym.make('FrozenLake-v1'))
+    env = DiscreteOneHotWrapper(gym.make('FrozenLake-v1')) # python somehow does not see toy_text lib in env is not opened
+    # in this example environment is little different because we change ground to non-slippery, as a result networks learns faster
+    env = gym.envs.toy_text.frozen_lake.FrozenLakeEnv(
+        is_slippery=False)
+    env.spec = gym.spec("FrozenLake-v1")
+    env = gym.wrappers.TimeLimit(env, max_episode_steps=100)
+    env = DiscreteOneHotWrapper(env)
+    # env = gym.wrappers.Monitor(env, directory="mon", force=True)
     obs_size = env.observation_space.shape[0]
     n_actions = env.action_space.n
 
@@ -129,3 +137,5 @@ if __name__ == "__main__":
         if reward_mean > 0.8:
             print("Solved!")
             break
+    # writer.close()
+
