@@ -111,4 +111,48 @@ if __name__ == "__main__":
             print("Solved!")
             break
     # writer.close()
+
+
+
+"""
+CROSS ENTROPY schematic
+# imports
+
+
+# network class (obs_n, hidden_n, act_n)
+
+    # class init
+    
+    # network
+    
+    # forward() method implementation
+
+
+# function for generating batches (env, net, batch_size) -> batch 
+
+    # prepare data, reset env
+    
+    # while loop for generating batches
+    
+        # return batch
+       # OR
+        # yield, return data when episode ended
+        # reset env and variables
+
+
+# function to filter episodes from batches (batch, percentile) -> return tensors
+
+    #  reward_bound and reward_mean/for featback purposes
+    
+    # filter episodes below bound
+
+
+# main code with learning loop
+if __name__ == "__main__":
+    pass
+    # prepare env, prepare net, loss_func and optimizer
+
+    # start learning loop with filtering every next batch
+    # break or end loop when network works gooe enough
+"""
     
