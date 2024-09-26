@@ -3,6 +3,7 @@ from collections import namedtuple
 import gym
 import numpy as np
 from torch import nn, FloatTensor, optim, LongTensor
+import wandb
 
 
 HIDDEN_N = 128
@@ -79,7 +80,8 @@ def filter_epizodes(batch, percentile):
 
 # main code with learning loop
 if __name__ == "__main__":
-    pass
+    # add wandb instance to learning loop to log variables into wandb
+    wandb.init(project="first-project")
     # prepare env, prepare net, loss_func and optimizer
     env = gym.make('CartPole-v1')
     net = Network(env.observation_space.shape[0], HIDDEN_N, env.action_space.n)
@@ -96,7 +98,10 @@ if __name__ == "__main__":
         loss = loss_func(net_actions, act)
         loss.backward()
         optimizer.step()
+        wandb.log({"mean reward": r_mean, "loss": loss})
         print(f'iteration {iter} mean {r_mean} bound {r_bound}')
         if r_mean > 199:
             print('Finished')
             break
+        iter += 1
+    wandb.finish()
