@@ -24,7 +24,6 @@ class Net(nn.Module):
         # because it uses softmax function and counts loss but instead of first possibility this way we get
         # more numeric stable expression
         # Downside of this solution is that to probabilities from network we have to use softmax() each time
-        # TODO dopytac czym to się różni tak właściwie że jest niby to samo ale jest bardziej stabilne numerycznie
 
     def forward(self, x):
         return self.net(x)

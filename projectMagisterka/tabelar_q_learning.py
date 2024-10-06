@@ -25,7 +25,7 @@ class Agent:
         return old_state, action, reward, new_state
 
     def best_value_and_action(self, state):
-        """Method used to choose best action and value in current state"""
+        """Method used to choose best action and action value in current state"""
         best_value, best_action = None, None
         for action in range(self.env.action_space.n):
             action_value = self.values[(state, action)]
