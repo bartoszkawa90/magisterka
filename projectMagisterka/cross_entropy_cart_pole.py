@@ -1,7 +1,6 @@
 from collections import namedtuple
 import gym
 import torch as t
-from tensorboardX import SummaryWriter
 from torch import nn
 import numpy as np
 from torch import optim
