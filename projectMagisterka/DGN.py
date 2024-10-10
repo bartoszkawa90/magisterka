@@ -6,7 +6,8 @@ import numpy as np
 from torch import optim
 import wandb
 from collections import namedtuple, deque
-from random import random
+import random
+import os
 
 
 LEARNING_RATE = 1e-4
@@ -20,6 +21,8 @@ MEAN_REWARD_BOUND = 400
 EPSILON_DECAY_LAST_FRAME = 150000
 EPSILON_START = 1.0
 EPSILON_FINAL = 0.01
+
+SEED = 42
 
 
 Experience = namedtuple('Experience', field_names=['state', 'action', 'reward', 'done', 'new_state'])
@@ -49,6 +52,10 @@ class ExperienceBuffer:
 class DQNetwork(nn.Module):
     def __init__(self, input_shape, output_shape):
         super(DQNetwork, self).__init__()
+        # we want to use LeakyReLU which does not equal all negative values to 0 like ReLU, leaky relu has some slope
+        # for negative values,
+        # We want LeakyReLU because ReLU can make some neuron stop learning and LeakyReLU helps with that
+        # https://pytorch.org/docs/stable/generated/torch.nn.LeakyReLU.html
         self.net = nn.Sequential(
             nn.Linear(input_shape, 64),
             nn.LeakyReLU(negative_slope=0.1),
@@ -66,7 +73,7 @@ class Agent:
         self._reset()
 
     def _reset(self):
-        self.state = env.reset()[0]
+        self.state = env.reset(seed=SEED)[0]
         self.total_reward = 0.0
 
     @torch.no_grad()
@@ -74,7 +81,7 @@ class Agent:
         """Make a single step random or not(possibility of random action is described by epsilon value)"""
         done_reward = None
 
-        if random() < epsilon:
+        if random.random() < epsilon:
             action = env.action_space.sample()
         else:
             state = t.tensor(np.array(self.state))
@@ -108,6 +115,8 @@ def complex_loss_function(batch, net, tgt_net):
     # use torch.no_grad() because we are sure we don't want to calculate gradient, this way is more efficient
     with t.no_grad():
         next_state_values = tgt_net(t_next_states).max(1).values
+        # if previous action ended episode (it was the last step in episode) we dont want to consider
+        # next one because ot does not exist
         next_state_values[t_dones] = 0.0
         # we want to detach to avoid flow of gradients to neural network
         next_state_values = next_state_values.detach()
@@ -119,8 +128,24 @@ def complex_loss_function(batch, net, tgt_net):
     return nn.MSELoss()(state_action_values, expected_state_action_values)
 
 
+def set_seed(seed: int = 42) -> None:
+    """Function which sets seed"""
+    # env.seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    t.manual_seed(seed)
+    t.cuda.manual_seed(seed)
+    t.backends.cudnn.deterministic = True
+    t.backends.cudnn.benchmark = False
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    print(f"Random seed set as {seed}")
+
+
 if __name__ == "__main__":
+    # wandb.init(project="first-project")
     env = gym.make('CartPole-v1')
+    # set seed
+    set_seed(SEED)
     buffer = ExperienceBuffer(REPLAY_SIZE)
     agent = Agent(env, buffer)
     epsilon = EPSILON_START
@@ -160,3 +185,6 @@ if __name__ == "__main__":
         loss = complex_loss_function(batch, net, target_net)
         loss.backward()
         optimizer.step()
+    #     wandb.log({"mean reward of last 100": np.mean(total_rewards[-100:]),"reward after last step": reward,
+    #                "epsilon": epsilon, "loss": loss})
+    # wandb.finish()
