@@ -180,7 +180,7 @@ if __name__ == "__main__":
         if iter % SYNC_TARGET_OBS == 0:
             target_net.load_state_dict(net.state_dict())
 
-        # TODO should there be reward for steps or for episodes because in cart pole every step is rewarded with value 1
+        optimizer.zero_grad()
         batch = buffer.sample(BATCH_SIZE)
         loss = complex_loss_function(batch, net, target_net)
         loss.backward()
