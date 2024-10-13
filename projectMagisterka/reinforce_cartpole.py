@@ -3,6 +3,7 @@ import gym
 import numpy as np
 import random
 from collections import namedtuple
+from gym.spaces import Discrete
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -56,7 +57,8 @@ class Agent:
 
         state = torch.tensor(np.array(self.state))
         action_probs = F.softmax(net(state), dim=0)
-        action = random.choices([0, 1], weights=action_probs)[0]
+        if isinstance(self.env.action_space, Discrete):
+            action = random.choices(list(range(self.env.action_space.n)), weights=action_probs)[0]
 
         # make a step
         new_state, reward, is_done, _, _ = self.env.step(action)
