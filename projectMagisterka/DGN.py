@@ -16,7 +16,7 @@ BATCH_SIZE = 32
 REPLAY_SIZE = 10000
 REPLAY_START_SIZE = 10000
 SYNC_TARGET_OBS = 1000
-MEAN_REWARD_BOUND = 400
+MEAN_REWARD_BOUND = 150  #400
 
 EPSILON_DECAY_LAST_FRAME = 150000
 EPSILON_START = 1.0
@@ -74,6 +74,7 @@ class Agent:
 
     def _reset(self):
         self.state = env.reset(seed=SEED)[0]
+        self.env.action_space.seed(SEED)
         self.total_reward = 0.0
 
     @torch.no_grad()
@@ -82,7 +83,9 @@ class Agent:
         done_reward = None
 
         if random.random() < epsilon:
-            action = env.action_space.sample()
+            # this way is random and does not work with seeding
+            # action = env.action_space.sample()
+            action = random.choice([0, 1])
         else:
             state = t.tensor(np.array(self.state))
             action_vals = net(state)
