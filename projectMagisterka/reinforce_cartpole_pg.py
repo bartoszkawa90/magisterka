@@ -15,7 +15,7 @@ import random
 
 GAMMA = 0.99
 LEARNING_RATE = 0.001
-ENTROPY_BETA = 0.01
+ENTROPY_BETA = 0.05
 BATCH_SIZE = 8
 REWARD_MEAN_BOUND = 200
 SEED = 42
@@ -44,8 +44,8 @@ def calc_qvals(rewards, gamma):
     """Function calculates Q values (discounted summary reward for steps)
           We use reversed lists to make function more efficient"""
     sum_values = 0.0
-    for reward in reversed(rewards):
-        sum_values = reward + gamma * sum_values
+    for rew in reversed(rewards):
+        sum_values = rew + gamma * sum_values
     return sum_values
 
 
@@ -54,40 +54,41 @@ class AgentPolicyGradient:
         self.env = env
         self.counter_rewards = count
         self.counter = count
-        self._reset()
         self.buffer = []
         self.gamma = gamma
         self.done = True
-        self.start_episode = True
         self.total_reward = 0.0
+        self.reset_done = False
+        self._reset()
 
     def _reset(self):
-        # print('Agent env reset')
         self.state = env.reset(seed=SEED)[0]
         self.env.action_space.seed(SEED)
-        # self.total_reward = 0.0
-        self.buffer = []
+        self.counter = self.counter_rewards
+        for _ in range(self.counter_rewards):
+            exp = self.step(net)
+            self.buffer.append(exp)
+        self.reset_done = True
 
     @torch.no_grad()
     def step(self, net):
         state = torch.tensor(np.array(self.state))
         action_probs = F.softmax(net(state), dim=0)
-        if isinstance(self.env.action_space, Discrete):
-            action = random.choices(list(range(self.env.action_space.n)), weights=action_probs)[0]
+        action = random.choices(list(range(self.env.action_space.n)), weights=action_probs)[0]
         # make a step
         new_state, reward, is_done, _, _ = self.env.step(action)
-        self.done = is_done
         self.total_reward += reward
         # experience
-        exp = Experience(self.state, action, reward, is_done, new_state)
+        experience = Experience(self.state, action, reward, is_done, new_state)
         self.state = new_state
-        # self.buffer.append(exp)
-        return exp
+        return experience
 
     def get_total_reward(self):
-        if self.done:
+        # if self.done and self.counter == 0:
+        if self.reset_done:
             reward = self.total_reward
             self.total_reward = 0.0
+            self.reset_done = False
             return reward
         else:
             return None
@@ -96,23 +97,16 @@ class AgentPolicyGradient:
     def make_a_step(self, net: nn.Module):
         """Function to make agent steps with using possibilities
             Returns: Experience tuple and episode reward if episode has ended"""
-        state = torch.tensor(np.array(self.state))
-        action_probs = F.softmax(net(state), dim=0)
-        # if isinstance(self.env.action_space, Discrete): # check if obs space is discrete, it always is in this case
-        action = random.choices(list(range(self.env.action_space.n)), weights=action_probs)[0]
-
-        # make a step
-        new_state, reward, is_done, _, _ = self.env.step(action)
-        self.total_reward += reward
-
-        exp = Experience(self.state, action, reward, is_done, new_state)
-        self.state = new_state
+        exp = self.step(net)
         self.buffer.append(exp)
-        if is_done:
+        self.done = exp.done
+
+        if self.done and self.counter >= 0:
+            self.counter -= 1
+        elif self.done and self.counter < 0:
             self._reset()
         last_10_discounted_reward = calc_qvals([e.reward for e in self.buffer[-10:]], self.gamma)
-        # print(f' REWARD : {done_reward}')
-        return last_10_discounted_reward, exp, is_done
+        return last_10_discounted_reward, exp
 
 
 def smooth(old: Optional[float], val: float, alpha: float = 0.95) -> float:
@@ -141,8 +135,9 @@ if __name__ == "__main__":
     batch_states, batch_actions, batch_scales = [], [], []
 
     for step_idx in range(8000000): # pętla tak na oko żeby coś chodziło
-        done_reward, exp, done = agent.make_a_step(net)
-        # print(f'--- REWARD : {done_reward}  ACTION {exp.action} STATE : {exp.state}---')
+        done_reward, exp = agent.make_a_step(net)
+        print(f'--- REWARD : {done_reward}  ACTION {exp.action} STATE : {exp.state}---')
+        # print(f'SUM REWARD {reward_sum} for {step_idx} step')
         reward_sum += done_reward
         baseline = reward_sum / (step_idx + 1)
         # writer.add_scalar("baseline", baseline, step_idx)
@@ -151,7 +146,7 @@ if __name__ == "__main__":
         batch_scales.append(done_reward - baseline)
 
         # handle new rewards
-        new_rewards = agent.get_total_reward() if done else None
+        new_rewards = agent.get_total_reward()
         if new_rewards:
             done_episodes += 1
             reward = new_rewards
