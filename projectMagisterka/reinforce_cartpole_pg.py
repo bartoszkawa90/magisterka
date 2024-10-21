@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import gym
-# import ptan
 import numpy as np
 from typing import Optional
 from collections import namedtuple
@@ -9,8 +8,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from gym.spaces import Discrete
 import random
+import os
 
 
 GAMMA = 0.99
@@ -50,46 +49,25 @@ def calc_qvals(rewards, gamma):
 
 
 class AgentPolicyGradient:
-    def __init__(self, env, gamma, count):
+    def __init__(self, env, gamma, counter):
         self.env = env
-        self.counter_rewards = count
-        self.counter = count
-        self.buffer = []
         self.gamma = gamma
-        self.done = True
-        self.total_reward = 0.0
-        self.reset_done = False
+        self.counter = counter
+        self.total_reward_ready = False
         self._reset()
 
     def _reset(self):
         self.state = env.reset(seed=SEED)[0]
         self.env.action_space.seed(SEED)
-        self.counter = self.counter_rewards
-        for _ in range(self.counter_rewards):
-            exp = self.step(net)
-            self.buffer.append(exp)
-        self.reset_done = True
-
-    @torch.no_grad()
-    def step(self, net):
-        state = torch.tensor(np.array(self.state))
-        action_probs = F.softmax(net(state), dim=0)
-        action = random.choices(list(range(self.env.action_space.n)), weights=action_probs)[0]
-        # make a step
-        new_state, reward, is_done, _, _ = self.env.step(action)
-        self.total_reward += reward
-        # experience
-        experience = Experience(self.state, action, reward, is_done, new_state)
-        self.state = new_state
-        return experience
+        self.total_reward = 0.0
+        self.buffer = []
+        self.done = False
+        self.total_reward_ready = True
 
     def get_total_reward(self):
-        # if self.done and self.counter == 0:
-        if self.reset_done:
-            reward = self.total_reward
-            self.total_reward = 0.0
-            self.reset_done = False
-            return reward
+        if self.total_reward_ready:
+            self.total_reward_ready = False
+            return self.total_reward
         else:
             return None
 
@@ -97,16 +75,35 @@ class AgentPolicyGradient:
     def make_a_step(self, net: nn.Module):
         """Function to make agent steps with using possibilities
             Returns: Experience tuple and episode reward if episode has ended"""
-        exp = self.step(net)
-        self.buffer.append(exp)
-        self.done = exp.done
-
-        if self.done and self.counter >= 0:
-            self.counter -= 1
-        elif self.done and self.counter < 0:
+        if not self.done:
+            self.total_reward_ready = False
             self._reset()
-        last_10_discounted_reward = calc_qvals([e.reward for e in self.buffer[-10:]], self.gamma)
-        return last_10_discounted_reward, exp
+            while True:
+                state = torch.tensor(np.array(self.state))
+                action_probs = F.softmax(net(state), dim=0)
+                action = random.choices(list(range(self.env.action_space.n)), weights=action_probs)[0]
+                # make a step in env
+                new_state, reward, is_done, _, _ = self.env.step(action)
+                self.total_reward += reward
+
+                exp = Experience(self.state, action, reward, is_done, new_state)
+                self.state = new_state
+                self.buffer.append(exp)
+                self.done = is_done
+                if is_done:
+                    break
+        if self.done:
+            temp_buff = [exp.reward for exp in self.buffer]
+            temp = temp_buff[-1::-1][-10:]
+            for _ in range(10):  # fill list of 1rewards with 0 when needed to
+                if len(temp) < 10:
+                    temp.append(0.0)
+            discounted_reward = calc_qvals(temp, self.gamma)
+            last_exp = self.buffer[0]
+            self.buffer.pop(0)
+            if len(self.buffer) == 0:
+                self.done = False
+            return discounted_reward, last_exp
 
 
 def smooth(old: Optional[float], val: float, alpha: float = 0.95) -> float:
@@ -115,9 +112,23 @@ def smooth(old: Optional[float], val: float, alpha: float = 0.95) -> float:
     return old * alpha + (1-alpha)*val
 
 
+def set_seed(seed: int = 42) -> None:
+    """Function which sets seed"""
+    # env.seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    print(f"Random seed set as {seed}")
+
+
 if __name__ == "__main__":
     env = gym.make("CartPole-v1")
-    # wandb.init(project="first-project")  #TODO add
+    wandb.init(project="first-project")
+    set_seed(SEED)
     net = PGN(env.observation_space.shape[0], env.action_space.n)
     print(net)
 
@@ -134,13 +145,10 @@ if __name__ == "__main__":
 
     batch_states, batch_actions, batch_scales = [], [], []
 
-    for step_idx in range(8000000): # pętla tak na oko żeby coś chodziło
+    for step_idx in range(800000):
         done_reward, exp = agent.make_a_step(net)
-        print(f'--- REWARD : {done_reward}  ACTION {exp.action} STATE : {exp.state}---')
-        # print(f'SUM REWARD {reward_sum} for {step_idx} step')
         reward_sum += done_reward
         baseline = reward_sum / (step_idx + 1)
-        # writer.add_scalar("baseline", baseline, step_idx)
         batch_states.append(exp.state)
         batch_actions.append(int(exp.action))
         batch_scales.append(done_reward - baseline)
@@ -152,11 +160,9 @@ if __name__ == "__main__":
             reward = new_rewards
             total_rewards.append(reward)
             mean_rewards = float(np.mean(total_rewards[-100:]))
+            wandb.log({"mean_reward": mean_rewards, "reward": new_rewards})
             print("%d: reward: %6.2f, mean_100: %6.2f, episodes: %d" % (
                 step_idx, reward, mean_rewards, done_episodes))
-            # writer.add_scalar("reward", reward, step_idx)
-            # writer.add_scalar("reward_100", mean_rewards, step_idx)
-            # writer.add_scalar("episodes", done_episodes, step_idx)
             if mean_rewards > REWARD_MEAN_BOUND:
                 print("Solved in %d steps and %d episodes!" % (step_idx, done_episodes))
                 break
@@ -178,8 +184,6 @@ if __name__ == "__main__":
         entropy_v = -(prob_v * log_prob_v).sum(dim=1).mean()
         entropy_loss_v = -ENTROPY_BETA * entropy_v
         loss_v = loss_policy_v + entropy_loss_v
-        # print(f'Policy loss {loss_policy_v} and entropy loss {entropy_loss_v} for {step_idx} step')
-        # print(f'Loss {loss_v} for {step_idx} iteration !!!')
 
         loss_v.backward()
         optimizer.step()
@@ -188,7 +192,6 @@ if __name__ == "__main__":
         new_logits_v = net(states_v)
         new_prob_v = F.softmax(new_logits_v, dim=1)
         kl_div_v = -((new_prob_v / prob_v).log() * prob_v).sum(dim=1).mean()
-        # writer.add_scalar("kl", kl_div_v.item(), step_idx)
 
         grad_max = 0.0
         grad_means = 0.0
@@ -204,21 +207,11 @@ if __name__ == "__main__":
         l_policy = smooth(l_policy, loss_policy_v.item())
         l_total = smooth(l_total, loss_v.item())
 
-        # writer.add_scalar("baseline", baseline, step_idx)
-        # writer.add_scalar("baseline", entropy, step_idx)
-        # writer.add_scalar("loss_entropy", l_entropy, step_idx)
-        # writer.add_scalar("loss_policy", l_policy, step_idx)
-        # writer.add_scalar("loss_total", l_total, step_idx)
-        # writer.add_scalar("grad_l2", grad_means / grad_count, step_idx)
-        # writer.add_scalar("grad_max", grad_max, step_idx)
-        # writer.add_scalar("batch_scales", bs_smoothed, step_idx)
-
-        # wandb.log({"baseline": baseline, "baseline": baseline, 'loss_entropy': loss_entropy, 'loss_policy': loss_policy,
-        #            'grad_l2': grad_l2, 'grad_max': grad_max, 'batch_scales': batch_scales})
+        wandb.log({"baseline": baseline, "baseline_entropy": entropy, 'loss_entropy': l_policy, 'loss_policy': l_total,
+                   'grad_l2': grad_means / grad_count, 'grad_max': grad_max, 'batch_scales': bs_smoothed})
 
         batch_states.clear()
         batch_actions.clear()
         batch_scales.clear()
 
-    # writer.close()
-    # wandb.finish()
+    wandb.finish()

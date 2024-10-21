@@ -105,7 +105,7 @@ if __name__ == "__main__":
 
     for step_idx, exp in enumerate(exp_source):
         reward_sum += exp.reward
-        print(f'--- REWARD : {exp.reward}  ACTION {exp.action} STATE : {exp.state}---')
+        print(f'Iter {step_idx}--- REWARD : {exp.reward}  ACTION {exp.action} STATE : {exp.state}---')
         # print(f'SUM REWARD {reward_sum} for {step_idx} step')
         baseline = reward_sum / (step_idx + 1)
         # writer.add_scalar("baseline", baseline, step_idx)
@@ -146,8 +146,8 @@ if __name__ == "__main__":
         entropy_v = -(prob_v * log_prob_v).sum(dim=1).mean()
         entropy_loss_v = -ENTROPY_BETA * entropy_v
         loss_v = loss_policy_v + entropy_loss_v
-        print(f'Policy loss {loss_policy_v} and entropy loss {entropy_loss_v} for {step_idx} step')
-        print(f'Loss {loss_v} for {step_idx} iteration !!!')
+        # print(f'Policy loss {loss_policy_v} and entropy loss {entropy_loss_v} for {step_idx} step')
+        # print(f'Loss {loss_v} for {step_idx} iteration !!!')
 
         loss_v.backward()
         optimizer.step()
