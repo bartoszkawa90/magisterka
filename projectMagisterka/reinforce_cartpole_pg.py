@@ -160,7 +160,7 @@ if __name__ == "__main__":
             reward = new_rewards
             total_rewards.append(reward)
             mean_rewards = float(np.mean(total_rewards[-100:]))
-            wandb.log({"mean_reward": mean_rewards, "reward": new_rewards})
+            # wandb.log({"mean_reward": mean_rewards, "reward": new_rewards})
             print("%d: reward: %6.2f, mean_100: %6.2f, episodes: %d" % (
                 step_idx, reward, mean_rewards, done_episodes))
             if mean_rewards > REWARD_MEAN_BOUND:
@@ -184,11 +184,18 @@ if __name__ == "__main__":
         entropy_v = -(prob_v * log_prob_v).sum(dim=1).mean()
         entropy_loss_v = -ENTROPY_BETA * entropy_v
         loss_v = loss_policy_v + entropy_loss_v
+        '''Above the policy entropy is counted and stored in entropy_loss_v we consider this 
+        value // subtract from loss value // so agent will not stuck in local minimum
+        WE PREVENT AGENT FROM BEING TOO SURE OF HIS CHOICE'''
 
         loss_v.backward()
         optimizer.step()
 
         # calc KL-div
+        '''Below we count divergence of Kullback-Leiblera for new and old policy, this value shows how much new policy is
+        different from old one, we do not want any rapid changes so it needs to be a little bit smoothed
+        Debug and observation purposes in this case, seems to have little effect and works fine without it
+         IN THIS CASE'''
         new_logits_v = net(states_v)
         new_prob_v = F.softmax(new_logits_v, dim=1)
         kl_div_v = -((new_prob_v / prob_v).log() * prob_v).sum(dim=1).mean()
