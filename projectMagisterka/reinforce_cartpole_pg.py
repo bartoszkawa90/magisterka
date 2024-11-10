@@ -127,7 +127,7 @@ def set_seed(seed: int = 42) -> None:
 
 if __name__ == "__main__":
     env = gym.make("CartPole-v1")
-    wandb.init(project="first-project")
+    # wandb.init(project="first-project")
     set_seed(SEED)
     net = PGN(env.observation_space.shape[0], env.action_space.n)
     print(net)
@@ -214,11 +214,11 @@ if __name__ == "__main__":
         l_policy = smooth(l_policy, loss_policy_v.item())
         l_total = smooth(l_total, loss_v.item())
 
-        wandb.log({"baseline": baseline, "baseline_entropy": entropy, 'loss_entropy': l_policy, 'loss_policy': l_total,
-                   'grad_l2': grad_means / grad_count, 'grad_max': grad_max, 'batch_scales': bs_smoothed})
+        # wandb.log({"baseline": baseline, "baseline_entropy": entropy, 'loss_entropy': l_policy, 'loss_policy': l_total,
+        #            'grad_l2': grad_means / grad_count, 'grad_max': grad_max, 'batch_scales': bs_smoothed})
 
         batch_states.clear()
         batch_actions.clear()
         batch_scales.clear()
 
-    wandb.finish()
+    # wandb.finish()
