@@ -28,23 +28,23 @@ class A2C(nn.Module):
     def __init__(self, input_size, n_actions):
         super(A2C, self).__init__()
         self.network = nn.Sequential(
-            nn.Linear(input_size, 512),
+            nn.Linear(input_size, 1024),
             nn.ReLU(),
-            nn.Linear(512, n_actions),
+            nn.Linear(1024, n_actions),
             nn.ReLU()
         )
 
         # self.net_out_shape = self.get_net_shape(input_size)
         self.policy = nn.Sequential(
-            nn.Linear(n_actions, 128),
+            nn.Linear(n_actions, 512),
             nn.ReLU(),
-            nn.Linear(128, n_actions)
+            nn.Linear(512, n_actions)
         )
 
         self.value = nn.Sequential(
-            nn.Linear(n_actions, 128),
+            nn.Linear(n_actions, 512),
             nn.ReLU(),
-            nn.Linear(128, 1)
+            nn.Linear(512, 1)
         )
 
     def forward(self, x):
@@ -217,6 +217,7 @@ if __name__ == "__main__":
         optimizer.zero_grad()
         logits_v, values_v = net(states_v)
         #TODO mozliwości, rewards, done_rewards, zdyskontowane albo nie
+        # trzeba ogarnąć te wartości jakoś
         vref_vals = count_action_vals(exp_buffer, net)
         loss_values_v = F.mse_loss(values_v, vref_vals) #TODO REQUIRED TO GET ACTION VALUES, CANT USE batch_scales, these all only rewards for steps
 
