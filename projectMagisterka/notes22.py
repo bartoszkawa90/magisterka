@@ -24,32 +24,32 @@ NUM_ITERATIONS = 80000000
 REWARD_STEPS = 10
 
 
-class A2C(nn.Module):
-    def __init__(self, input_size, n_actions):
-        super(A2C, self).__init__()
-        self.network = nn.Sequential(
-            nn.Linear(input_size, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, n_actions),
-            nn.ReLU()
-        )
+class ActorNet(nn.Module):
+    def __init__(self, hidden_dim=16):
+        super().__init__()
 
-        # self.net_out_shape = self.get_net_shape(input_size)
-        self.policy = nn.Sequential(
-            nn.Linear(n_actions, 512),
-            nn.ReLU(),
-            nn.Linear(512, n_actions)
-        )
+        self.hidden = nn.Linear(4, hidden_dim)
+        self.output = nn.Linear(hidden_dim, 2)
 
-        self.value = nn.Sequential(
-            nn.Linear(n_actions, 512),
-            nn.ReLU(),
-            nn.Linear(512, 1)
-        )
+    def forward(self, s):
+        outs = self.hidden(s)
+        outs = F.relu(outs)
+        logits = self.output(outs)
+        return logits
 
-    def forward(self, x):
-        network_out = self.network(x)#.view(x.size()[0], -1)
-        return self.policy(network_out), self.value(network_out)
+
+class ValueNet(nn.Module):
+    def __init__(self, hidden_dim=16):
+        super().__init__()
+
+        self.hidden = nn.Linear(4, hidden_dim)
+        self.output = nn.Linear(hidden_dim, 1)
+
+    def forward(self, s):
+        outs = self.hidden(s)
+        outs = F.relu(outs)
+        value = self.output(outs)
+        return value
 
 
 Experience = namedtuple('Experience', field_names=['state', 'action', 'reward', 'done', 'new_state'])
@@ -96,8 +96,8 @@ class AgentPolicyGradient:
             self._reset()
             while True:
                 state = torch.tensor(np.array(self.state))
-                policy_out = net(state)[0]
-                action_probs = F.softmax(policy_out, dim=0)
+                # policy_out = net(state)[0]
+                action_probs = F.softmax(net(state), dim=0)
                 action = random.choices(list(range(self.env.action_space.n)), weights=action_probs)[0]
                 # make a step in env
                 new_state, reward, is_done, _, _ = self.env.step(action)
@@ -123,7 +123,7 @@ class AgentPolicyGradient:
             return discounted_reward, last_exp
 
 
-def count_action_vals(exp_buff: List, net) -> torch.FloatTensor:
+def count_action_vals(exp_buff: List, net_policy, net_values) -> torch.FloatTensor:
     states = []
     actions = []
     rewards = []
@@ -140,7 +140,7 @@ def count_action_vals(exp_buff: List, net) -> torch.FloatTensor:
     rewards_np = np.array(rewards, dtype=np.float32)
     if not_done_idx:
         last_states_v = torch.FloatTensor(np.array(last_states, copy=False))
-        last_vals_v = net(last_states_v)[1]
+        last_vals_v = net_values(last_states_v)
         last_vals_np = last_vals_v.data.cpu().numpy()[:, 0]
         last_vals_np *= GAMMA ** REWARD_STEPS
         rewards_np[not_done_idx] += last_vals_np
@@ -166,12 +166,14 @@ if __name__ == "__main__":
     env = gym.make("CartPole-v1")
     # wandb.init(project="first-project")
     set_seed(SEED)
-    net = A2C(env.observation_space.shape[0], env.action_space.n)
-    print(net)
+    net_agent = ActorNet(env.observation_space.shape[0])
+    net_val = ValueNet(env.observation_space.shape[0])
+    print(net_agent, '\n', net_val)
 
     agent = AgentPolicyGradient(env, GAMMA, REWARD_STEPS)
 
-    optimizer = optim.Adam(net.parameters(), lr=LEARNING_RATE, eps=1e-3)
+    optimizer_agent = optim.Adam(net_agent.parameters(), lr=LEARNING_RATE, eps=1e-3)
+    optimizer_val = optim.Adam(net_val.parameters(), lr=LEARNING_RATE, eps=1e-3)
 
     total_rewards = []
     step_rewards = []
@@ -184,7 +186,7 @@ if __name__ == "__main__":
     batch_states, batch_actions, batch_scales = [], [], []
 
     for step_idx in range(NUM_ITERATIONS):
-        done_reward, exp = agent.make_a_step(net)
+        done_reward, exp = agent.make_a_step(net_agent)
         reward_sum += done_reward
         baseline = reward_sum / (step_idx + 1)
         batch_states.append(exp.state)
@@ -214,11 +216,12 @@ if __name__ == "__main__":
         batch_actions_t = torch.LongTensor(batch_actions)
         batch_scale_v = torch.FloatTensor(batch_scales)
 
-        optimizer.zero_grad()
-        logits_v, values_v = net(states_v)
+        optimizer_agent.zero_grad()
+        optimizer_val.zero_grad()
+        logits_v, values_v = net_agent(states_v), net_val(states_v)
         #TODO mozliwości, rewards, done_rewards, zdyskontowane albo nie
         # trzeba ogarnąć te wartości jakoś
-        vref_vals = count_action_vals(exp_buffer, net)
+        vref_vals = count_action_vals(exp_buffer, net_agent, net_val)
         loss_values_v = F.mse_loss(values_v, vref_vals) #TODO REQUIRED TO GET ACTION VALUES, CANT USE batch_scales, these all only rewards for steps
 
         log_prob_v = F.log_softmax(logits_v, dim=1)
@@ -234,9 +237,11 @@ if __name__ == "__main__":
         # apply entropy and value gradients
         loss_v = entropy_loss_v + loss_values_v
         loss_v.backward()
-        nn_utils.clip_grad_norm(net.parameters(), CLIP_GRAD)
+        nn_utils.clip_grad_norm(net_agent.parameters(), CLIP_GRAD)
+        nn_utils.clip_grad_norm(net_val.parameters(), CLIP_GRAD)
 
-        optimizer.step()
+        optimizer_agent.step()
+        optimizer_val.step()
 
         # wandb.log({"baseline": baseline, "baseline_entropy": entropy, 'loss_entropy': l_policy, 'loss_policy': l_total,
         #            'grad_l2': grad_means / grad_count, 'grad_max': grad_max, 'batch_scales': bs_smoothed})
