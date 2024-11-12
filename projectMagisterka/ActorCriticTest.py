@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from random import choices
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -66,22 +67,13 @@ class ValueNet(nn.Module):
 gamma = 0.99
 
 # pick up action with above distribution policy_pi
-def pick_sample(s):
+def pick_sample(s, net, env):
     with torch.no_grad():
-        #   --> size : (1, 4)
-        s_batch = np.expand_dims(s, axis=0)
-        s_batch = torch.tensor(s_batch, dtype=torch.float).to(device)
-        # Get logits from state
-        #   --> size : (1, 2)
-        logits = actor_func(s_batch)
-        #   --> size : (2)
-        logits = logits.squeeze(dim=0)
-        # From logits to probabilities
-        probs = F.softmax(logits, dim=-1)
-        # Pick up action's sample
-        a = torch.multinomial(probs, num_samples=1)
-        # Return
-        return a.tolist()[0]
+        state = torch.tensor(np.array(s))
+        with torch.no_grad():
+            action_probs = F.softmax(net(state), dim=0)
+            action = choices(list(range(env.action_space.n)), weights=action_probs)[0]
+        return action
 
 
 def calc_qvals(rewards, gamma):
@@ -94,11 +86,11 @@ def calc_qvals(rewards, gamma):
 
 
 env = gym.make("CartPole-v1")
-actor_func = ActorNet(env.observation_space.shape[0], env.action_space.n).to(device)
-value_func = ValueNet(env.observation_space.shape[0], env.action_space.n).to(device)
+net_actor = ActorNet(env.observation_space.shape[0], env.action_space.n).to(device)
+net_value = ValueNet(env.observation_space.shape[0], env.action_space.n).to(device)
 reward_records = []
-opt1 = torch.optim.AdamW(value_func.parameters(), lr=0.001)
-opt2 = torch.optim.AdamW(actor_func.parameters(), lr=0.001)
+opt1 = torch.optim.AdamW(net_value.parameters(), lr=0.001)
+opt2 = torch.optim.AdamW(net_actor.parameters(), lr=0.001)
 for i in range(1500):
     #
     # Run episode till done
@@ -111,7 +103,7 @@ for i in range(1500):
     s, _ = env.reset()
     while not done:
         states.append(s.tolist())
-        a = pick_sample(s)
+        a = pick_sample(s, net_actor, env)
         s, r, term, trunc, _ = env.step(a)
         done = term #or trunc
         actions.append(a)
@@ -140,26 +132,32 @@ for i in range(1500):
     opt1.zero_grad()
     states = torch.tensor(states, dtype=torch.float).to(device)
     cum_rewards = torch.tensor(cum_rewards, dtype=torch.float).to(device)
-    values = value_func(states)
-    values = values.squeeze(dim=1)
+    values = net_value(states)
     vf_loss = F.mse_loss(
-        values,
-        cum_rewards,
-        reduction="none")
+        values.squeeze(dim=1),
+        cum_rewards)
     vf_loss.sum().backward()
     opt1.step()
 
     # Optimize policy loss (Actor)
     with torch.no_grad():
-        values = value_func(states)
+        values = net_value(states)
     opt2.zero_grad()
     actions = torch.tensor(actions, dtype=torch.int64).to(device)
     advantages = cum_rewards - values
-    logits = actor_func(states)
-    log_probs = -F.cross_entropy(logits, actions, reduction="none")
-    pi_loss = -log_probs * advantages
-    pi_loss.sum().backward()
+    logits = net_actor(states)
+
+    log_probs = F.log_softmax(logits)
+    log_probs_actions = advantages * log_probs[range(len(actions)), actions]
+    loss_policy = -log_probs_actions.mean()
+    loss_policy.backward()
     opt2.step()
+
+
+    # log_probs = -F.cross_entropy(logits, actions, reduction="none")
+    # pi_loss = -log_probs * advantages
+    # pi_loss.sum().backward()
+    # opt2.step()
 
     # Output total rewards in episode (max 500)
     print("Run episode{} with rewards {}".format(i, sum(rewards)), end="\r")
