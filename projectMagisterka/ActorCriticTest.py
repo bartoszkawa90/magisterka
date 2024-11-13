@@ -66,6 +66,7 @@ class ValueNet(nn.Module):
 
 gamma = 0.99
 
+
 # pick up action with above distribution policy_pi
 def pick_sample(s, net, env):
     with torch.no_grad():
@@ -112,6 +113,7 @@ for i in range(1500):
     #
     # Get cumulative rewards
     #
+
     # cum_rewards = np.zeros_like(rewards)
     # reward_len = len(rewards)
     # for j in reversed(range(reward_len)):
@@ -128,10 +130,13 @@ for i in range(1500):
     # Train (optimize parameters)
     #
 
+    # Change observation variables to tensors
+    states = torch.FloatTensor(states)
+    cum_rewards = torch.FloatTensor(cum_rewards)
+    actions = torch.LongTensor(actions)
+
     # Optimize value loss (Critic)
     opt1.zero_grad()
-    states = torch.tensor(states, dtype=torch.float).to(device)
-    cum_rewards = torch.tensor(cum_rewards, dtype=torch.float).to(device)
     values = net_value(states)
     vf_loss = F.mse_loss(
         values.squeeze(dim=1),
@@ -143,7 +148,6 @@ for i in range(1500):
     with torch.no_grad():
         values = net_value(states)
     opt2.zero_grad()
-    actions = torch.tensor(actions, dtype=torch.int64).to(device)
     advantages = cum_rewards - values
     logits = net_actor(states)
 
@@ -152,7 +156,6 @@ for i in range(1500):
     loss_policy = -log_probs_actions.mean()
     loss_policy.backward()
     opt2.step()
-
 
     # log_probs = -F.cross_entropy(logits, actions, reduction="none")
     # pi_loss = -log_probs * advantages
@@ -164,7 +167,7 @@ for i in range(1500):
     reward_records.append(sum(rewards))
 
     # stop if reward mean > 475.0
-    if np.average(reward_records[-50:]) > 475.0:
+    if np.mean(reward_records[-50:]) > 475.0:
         break
 
 print("\nDone")
