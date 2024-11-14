@@ -1,41 +1,21 @@
 import gymnasium as gym
+import os
+import random
 from copy import deepcopy
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from random import choices
+from collections import namedtuple
+import torch.nn.utils as nn_utils
 
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-# class ActorNet(nn.Module):
-#     def __init__(self, hidden_dim=16):
-#         super().__init__()
-#
-#         self.hidden = nn.Linear(4, hidden_dim)
-#         self.output = nn.Linear(hidden_dim, 2)
-#
-#     def forward(self, s):
-#         outs = self.hidden(s)
-#         outs = F.relu(outs)
-#         logits = self.output(outs)
-#         return logits
-#
-#
-# class ValueNet(nn.Module):
-#     def __init__(self, hidden_dim=16):
-#         super().__init__()
-#
-#         self.hidden = nn.Linear(4, hidden_dim)
-#         self.output = nn.Linear(hidden_dim, 1)
-#
-#     def forward(self, s):
-#         outs = self.hidden(s)
-#         outs = F.relu(outs)
-#         value = self.output(outs)
-#         return value
+GAMMA = 0.99
+NUMBER_OF_EPISODES = 1500
+BATCH_SIZE = 10
+CLIP_GRAD = 0.1
+ENTROPY_BETA = 0.01
 
 
 class ActorNet(nn.Module):
@@ -64,9 +44,6 @@ class ValueNet(nn.Module):
         return self.net(x)
 
 
-gamma = 0.99
-
-
 # pick up action with above distribution policy_pi
 def pick_sample(s, net, env):
     with torch.no_grad():
@@ -86,89 +63,165 @@ def calc_qvals(rewards, gamma):
     return sum_values
 
 
-env = gym.make("CartPole-v1")
-net_actor = ActorNet(env.observation_space.shape[0], env.action_space.n).to(device)
-net_value = ValueNet(env.observation_space.shape[0], env.action_space.n).to(device)
-reward_records = []
-opt1 = torch.optim.AdamW(net_value.parameters(), lr=0.001)
-opt2 = torch.optim.AdamW(net_actor.parameters(), lr=0.001)
-for i in range(1500):
-    #
-    # Run episode till done
-    #
-    print(f'{i} episode {np.average(reward_records[-50:])} mean reward')
-    done = False
-    states = []
-    actions = []
-    rewards = []
+Experience = namedtuple('Experience', field_names=['state', 'action', 'reward'])
+
+
+def batch(env, betch_len, net):
+    # global vars
+    global EPISODE_REWARD
+    global FINAL_REWARD
+    FINAL_REWARD = 0
+    EPISODE_REWARD = 0
+    # vars
+    episodes = []
+    i = 0
     s, _ = env.reset()
-    while not done:
-        states.append(s.tolist())
-        a = pick_sample(s, net_actor, env)
+    while True:
+        a = pick_sample(s, net, env)
         s, r, term, trunc, _ = env.step(a)
-        done = term #or trunc
-        actions.append(a)
-        rewards.append(r)
+        done = term  # or trunc
+        if done:
+            r = 0
+        episodes.append(Experience(s, a, r))
+        EPISODE_REWARD += r
+        if done:
+            # print(f' --- Episode reward {EPISODE_REWARD} --- ')
+            FINAL_REWARD = EPISODE_REWARD
+            EPISODE_REWARD = 0
+            s, _ = env.reset()
+        if len(episodes) == betch_len:
+            # print(f'Returning episode {i} with {len(episodes)} \n') # LOG
+            i += 1
+            yield episodes
+            episodes.clear()
 
-    #
-    # Get cumulative rewards
-    #
 
-    # cum_rewards = np.zeros_like(rewards)
-    # reward_len = len(rewards)
-    # for j in reversed(range(reward_len)):
-    #     cum_rewards[j] = rewards[j] + (cum_rewards[j+1]*gamma if j+1 < reward_len else 0)
+def set_seed(seed: int = 42) -> None:
+    """Function which sets seed"""
+    # env.seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    print(f"Random seed set as {seed}")
 
-    cum_rewards = np.zeros_like(rewards)
-    rewards_copy = deepcopy(rewards)
-    rewards_len = len(rewards)
-    for i in reversed(range(rewards_len)):
-        cum_rewards[rewards_len - 1 - i] = calc_qvals(rewards_copy, gamma)
-        rewards_copy[i] = 0
 
-    #
-    # Train (optimize parameters)
-    #
+if __name__ == "__main__":
+    env = gym.make("CartPole-v1")
+    set_seed()
+    net_actor = ActorNet(env.observation_space.shape[0], env.action_space.n)
+    net_value = ValueNet(env.observation_space.shape[0], env.action_space.n)
+    reward_records = []
+    opt1 = torch.optim.AdamW(net_value.parameters(), lr=0.001)
+    opt2 = torch.optim.AdamW(net_actor.parameters(), lr=0.001)
+    # for i in range(NUMBER_OF_EPISODES):
 
-    # Change observation variables to tensors
-    states = torch.FloatTensor(states)
-    cum_rewards = torch.FloatTensor(cum_rewards)
-    actions = torch.LongTensor(actions)
+    # jeżeli aktor robi głupio przez 20 kroków a potem idzie dobrze bo przez pierwsze 20 mu się pofarciło więc trzeba
+    # w jakichś zestawach typu po 10 będzie mądry w całości
+    # Taki nieskończony horyzont wprowadza dużą losowość
+    iter = 0
+    for exp in batch(env, BATCH_SIZE, net_actor):
+        iter += 1
+        states = [e.state for e in exp]
+        actions = [e.action for e in exp]
+        rewards = [e.reward for e in exp]
+        #
+        # Run episode till done
+        #
+        # print(f'{i} episode {np.average(reward_records[-50:])} mean reward')
+        # done = False
+        # states = []
+        # actions = []
+        # rewards = []
+        # s, _ = env.reset()
+        # while not done:
+        #     states.append(s.tolist())
+        #     a = pick_sample(s, net_actor, env)
+        #     s, r, term, trunc, _ = env.step(a)
+        #     done = term #or trunc
+        #     actions.append(a)
+        #     rewards.append(r)
 
-    # Optimize value loss (Critic)
-    opt1.zero_grad()
-    values = net_value(states)
-    vf_loss = F.mse_loss(
-        values.squeeze(dim=1),
-        cum_rewards)
-    vf_loss.sum().backward()
-    opt1.step()
+        # get cumulated discounter reward
+        cum_rewards = np.zeros_like(rewards)
+        rewards_copy = deepcopy(rewards)
+        rewards_len = len(rewards)
+        for i in reversed(range(rewards_len)):
+            cum_rewards[rewards_len - 1 - i] = calc_qvals(rewards_copy, GAMMA)
+            rewards_copy[i] = 0
+        # print(f'Cumulated dicounted reward {cum_rewards} for iter {iter}') #LOG
 
-    # Optimize policy loss (Actor)
-    with torch.no_grad():
+        # Change observation variables to tensors
+        states = torch.FloatTensor(states)
+        cum_rewards = torch.FloatTensor(cum_rewards)
+        actions = torch.LongTensor(actions)
+
+
+        # internet version
+        # Optimize value loss (Critic)
+        opt1.zero_grad()
         values = net_value(states)
-    opt2.zero_grad()
-    advantages = cum_rewards - values
-    logits = net_actor(states)
+        vf_loss = F.mse_loss(
+            values.squeeze(dim=1),
+            cum_rewards)
+        vf_loss.sum().backward()
+        opt1.step()
 
-    log_probs = F.log_softmax(logits)
-    log_probs_actions = advantages * log_probs[range(len(actions)), actions]
-    loss_policy = -log_probs_actions.mean()
-    loss_policy.backward()
-    opt2.step()
+        # Optimize policy loss (Actor)
+        with torch.no_grad():
+            values = net_value(states)
+        opt2.zero_grad()
+        advantages = cum_rewards - values
+        logits = net_actor(states)
 
-    # log_probs = -F.cross_entropy(logits, actions, reduction="none")
-    # pi_loss = -log_probs * advantages
-    # pi_loss.sum().backward()
-    # opt2.step()
+        log_probs = F.log_softmax(logits)
+        log_probs_actions = advantages * log_probs[range(len(actions)), actions]
+        loss_policy = -log_probs_actions.mean()
+        loss_policy.backward()
+        opt2.step()
+        print(f'FINAL_REWARD ??? {FINAL_REWARD}')
 
-    # Output total rewards in episode (max 500)
-    print("Run episode{} with rewards {}".format(i, sum(rewards)), end="\r")
-    reward_records.append(sum(rewards))
 
-    # stop if reward mean > 475.0
-    if np.mean(reward_records[-50:]) > 475.0:
-        break
+
+        # book version
+        # opt1.zero_grad()
+        # opt2.zero_grad()
+        # logits_v, value_v = net_actor(states), net_value(states)
+        # loss_value_v = F.mse_loss(value_v.squeeze(-1), cum_rewards)
+        #
+        # log_prob_v = F.log_softmax(logits_v, dim=1)
+        # adv_v = cum_rewards - value_v.detach()
+        # log_prob_actions_v = adv_v * log_prob_v[range(BATCH_SIZE), actions]
+        # loss_policy_v = -log_prob_actions_v.mean()
+        #
+        # prob_v = F.softmax(logits_v, dim=1)
+        # entropy_loss_v = ENTROPY_BETA * (prob_v * log_prob_v).sum(dim=1).mean()
+        #
+        # # calculate policy gradients only
+        # loss_policy_v.backward(retain_graph=True)
+        # grads = np.concatenate([p.grad.data.cpu().numpy().flatten()
+        #                         for p in net_actor.parameters()
+        #                         if p.grad is not None])
+        #
+        # # apply entropy and value gradients
+        # loss_v = entropy_loss_v + loss_value_v
+        # loss_v.backward()
+        # nn_utils.clip_grad_norm_(net_actor.parameters(), CLIP_GRAD)
+        # opt1.step()
+        # opt2.step()
+        # # get full loss
+        # loss_v += loss_policy_v
+
+        # Output total rewards in episode (max 500)
+        print("Run episode {} with rewards {}".format(iter, FINAL_REWARD), end="\r")
+        reward_records.append(FINAL_REWARD)
+
+        # stop if reward mean > 475.0
+        if np.mean(reward_records[-50:]) > 475.0 or iter > 20000:
+            break
 
 print("\nDone")
 env.close()

@@ -147,6 +147,7 @@ if __name__ == "__main__":
 
     for step_idx in range(800000):
         done_reward, exp = agent.make_a_step(net)
+        print(f'--- done reword {done_reward} exp state {exp.state} action {exp.action} ---')
         reward_sum += done_reward
         baseline = reward_sum / (step_idx + 1)
         batch_states.append(exp.state)
