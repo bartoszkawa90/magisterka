@@ -46,12 +46,10 @@ class ValueNet(nn.Module):
 
 # pick up action with above distribution policy_pi
 def pick_sample(s, net, env):
-    with torch.no_grad():
-        state = torch.tensor(np.array(s))
-        with torch.no_grad():
-            action_probs = F.softmax(net(state), dim=0)
-            action = choices(list(range(env.action_space.n)), weights=action_probs)[0]
-        return action
+    state = torch.tensor(np.array(s))
+    action_probs = F.softmax(net(state), dim=0)
+    action = choices(list(range(env.action_space.n)), weights=action_probs)[0]
+    return action
 
 
 def calc_qvals(rewards, gamma):
@@ -88,7 +86,7 @@ def batch(env, net, batch_size=BATCH_SIZE):
             shift = 0
             rewards = 9*[0.0] + [e.reward for e in steps]
             # rewards = 9*[0.0] + [net_value(torch.FloatTensor(e.state)).detach().numpy()[0] for e in steps]
-            for _, exp in zip(rewards, list(reversed(steps))):
+            for _, exp in zip(rewards, list((steps))):
                 # print(f'   {list(reversed(rewards))[shift:batch_size+shift]}   for shift {shift}')
                 yield Episode(calc_qvals(list(reversed(rewards))[shift:batch_size+shift], GAMMA), exp)
                 shift += 1

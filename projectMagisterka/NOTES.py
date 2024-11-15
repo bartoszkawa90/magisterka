@@ -57,7 +57,7 @@ if __name__ == "__main__":
 
     for step_idx, exp in enumerate(exp_source):
         reward_sum += exp.reward
-        print(f'reward {exp.reward}')
+        print(f'reward {exp.reward} state {exp.state} action {exp.action}')
         baseline = reward_sum / (step_idx + 1)
         batch_states.append(exp.state)
         batch_actions.append(int(exp.action))

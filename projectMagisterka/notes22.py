@@ -1,255 +1,150 @@
-#!/usr/bin/env python3
 import gym
 import numpy as np
-from typing import Optional, List
-from collections import namedtuple
-import wandb
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import random
-import os
-import torch.nn.utils as nn_utils
 
-
+# Hyperparameters
 GAMMA = 0.99
 LEARNING_RATE = 0.001
-ENTROPY_BETA = 0.05
+HIDDEN_SIZE = 128
 BATCH_SIZE = 8
-REWARD_MEAN_BOUND = 200
-SEED = 42
-CLIP_GRAD = 0.1
-NUM_ITERATIONS = 80000000
-REWARD_STEPS = 10
+MAX_EPISODES = 10000
+ENTROPY_BETA = 0.01  # Entropy coefficient for exploration
+ENV_NAME = "CartPole-v1"
 
-
+# Actor Network
 class ActorNet(nn.Module):
-    def __init__(self, hidden_dim=16):
-        super().__init__()
+    def __init__(self, input_dim, output_dim):
+        super(ActorNet, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, HIDDEN_SIZE),
+            nn.ReLU(),
+            nn.Linear(HIDDEN_SIZE, output_dim),
+        )
 
-        self.hidden = nn.Linear(4, hidden_dim)
-        self.output = nn.Linear(hidden_dim, 2)
+    def forward(self, x):
+        return self.net(x)
 
-    def forward(self, s):
-        outs = self.hidden(s)
-        outs = F.relu(outs)
-        logits = self.output(outs)
-        return logits
+# Critic Network
+class CriticNet(nn.Module):
+    def __init__(self, input_dim):
+        super(CriticNet, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, HIDDEN_SIZE),
+            nn.ReLU(),
+            nn.Linear(HIDDEN_SIZE, 1),
+        )
 
+    def forward(self, x):
+        return self.net(x)
 
-class ValueNet(nn.Module):
-    def __init__(self, hidden_dim=16):
-        super().__init__()
+# Select an action using the actor network
+def select_action(state, actor_net):
+    state_tensor = torch.FloatTensor(state)
+    logits = actor_net(state_tensor)
+    logits = torch.clamp(logits, min=-20, max=20)  # Avoid extreme values
+    action_probs = F.softmax(logits, dim=0)
+    action = np.random.choice(len(action_probs), p=action_probs.detach().numpy())
+    log_prob = torch.log(action_probs[action])
+    return action, log_prob, action_probs
 
-        self.hidden = nn.Linear(4, hidden_dim)
-        self.output = nn.Linear(hidden_dim, 1)
+# Train the networks
+def train():
+    env = gym.make(ENV_NAME)
+    input_dim = env.observation_space.shape[0]
+    output_dim = env.action_space.n
 
-    def forward(self, s):
-        outs = self.hidden(s)
-        outs = F.relu(outs)
-        value = self.output(outs)
-        return value
+    # Initialize networks and optimizers
+    actor_net = ActorNet(input_dim, output_dim)
+    critic_net = CriticNet(input_dim)
+    actor_optimizer = optim.Adam(actor_net.parameters(), lr=LEARNING_RATE)
+    critic_optimizer = optim.Adam(critic_net.parameters(), lr=LEARNING_RATE)
 
+    episode_rewards = []
 
-Experience = namedtuple('Experience', field_names=['state', 'action', 'reward', 'done', 'new_state'])
+    for episode in range(1, MAX_EPISODES + 1):
+        state = env.reset()[0]
+        states = []
+        actions = []
+        log_probs = []
+        rewards = []
+        entropies = []
+        episode_reward = 0
 
+        while True:
+            # Select action
+            action, log_prob, action_probs = select_action(state, actor_net)
+            entropy = -torch.sum(action_probs * torch.log(action_probs + 1e-10))  # Entropy calculation
+            next_state, reward, done, truncated, _ = env.step(action)
 
-def calc_qvals(rewards, gamma):
-    """Function calculates Q values (discounted summary reward for steps)
-          We use reversed lists to make function more efficient"""
-    sum_values = 0.0
-    for rew in reversed(rewards):
-        sum_values = rew + gamma * sum_values
-    return sum_values
+            # Clip reward for stability
+            reward = np.clip(reward, -1, 1)
 
+            # Store step data
+            states.append(state)
+            log_probs.append(log_prob)
+            rewards.append(reward)
+            entropies.append(entropy)
+            episode_reward += reward
+            state = next_state
 
-class AgentPolicyGradient:
-    def __init__(self, env, gamma, counter):
-        self.env = env
-        self.gamma = gamma
-        self.counter = counter
-        self.total_reward_ready = False
-        self._reset()
+            # Update the network after every BATCH_SIZE steps or at the end of an episode
+            if len(states) == BATCH_SIZE or done or truncated:
+                # Compute discounted returns with bootstrapping
+                next_value = 0 if done else critic_net(torch.FloatTensor(next_state)).item()
+                discounted_returns = []
+                R = next_value
+                for r in reversed(rewards):
+                    R = r + GAMMA * R
+                    discounted_returns.insert(0, R)
+                discounted_returns = torch.FloatTensor(discounted_returns)
 
-    def _reset(self):
-        self.state = env.reset(seed=SEED)[0]
-        self.env.action_space.seed(SEED)
-        self.total_reward = 0.0
-        self.buffer = []
-        self.done = False
-        self.total_reward_ready = True
+                # Normalize returns
+                if discounted_returns.std() > 0:
+                    discounted_returns = (discounted_returns - discounted_returns.mean()) / (discounted_returns.std() + 1e-5)
 
-    def get_total_reward(self):
-        if self.total_reward_ready:
-            self.total_reward_ready = False
-            return self.total_reward
-        else:
-            return None
+                # Convert batch data to tensors
+                states_tensor = torch.FloatTensor(states)
+                log_probs_tensor = torch.stack(log_probs)
+                entropies_tensor = torch.stack(entropies)
 
-    @torch.no_grad()
-    def make_a_step(self, net: nn.Module):
-        """Function to make agent steps with using possibilities
-            Returns: Experience tuple and episode reward if episode has ended"""
-        if not self.done:
-            self.total_reward_ready = False
-            self._reset()
-            while True:
-                state = torch.tensor(np.array(self.state))
-                # policy_out = net(state)[0]
-                action_probs = F.softmax(net(state), dim=0)
-                action = random.choices(list(range(self.env.action_space.n)), weights=action_probs)[0]
-                # make a step in env
-                new_state, reward, is_done, _, _ = self.env.step(action)
-                self.total_reward += reward
+                # Update Critic
+                critic_optimizer.zero_grad()
+                values = critic_net(states_tensor).squeeze()
+                critic_loss = F.mse_loss(values, discounted_returns)
+                critic_loss.backward()
+                torch.nn.utils.clip_grad_norm_(critic_net.parameters(), max_norm=1.0)
+                critic_optimizer.step()
 
-                exp = Experience(self.state, action, reward, is_done, new_state)
-                self.state = new_state
-                self.buffer.append(exp)
-                self.done = is_done
-                if is_done:
-                    break
-        if self.done:
-            temp_buff = [exp.reward for exp in self.buffer]
-            temp = temp_buff[-1::-1][-10:]
-            for _ in range(10):  # fill list of 1rewards with 0 when needed to
-                if len(temp) < 10:
-                    temp.append(0.0)
-            discounted_reward = calc_qvals(temp, self.gamma)
-            last_exp = self.buffer[0]
-            self.buffer.pop(0)
-            if len(self.buffer) == 0:
-                self.done = False
-            return discounted_reward, last_exp
+                # Update Actor
+                actor_optimizer.zero_grad()
+                advantages = discounted_returns - values.detach()
+                actor_loss = -(log_probs_tensor * advantages).mean() - ENTROPY_BETA * entropies_tensor.mean()
+                actor_loss.backward()
+                torch.nn.utils.clip_grad_norm_(actor_net.parameters(), max_norm=1.0)
+                actor_optimizer.step()
 
+                # Reset batch
+                states = []
+                log_probs = []
+                rewards = []
+                entropies = []
 
-def count_action_vals(exp_buff: List, net_policy, net_values) -> torch.FloatTensor:
-    states = []
-    actions = []
-    rewards = []
-    not_done_idx = []
-    last_states = []
-    for idx, exp in enumerate(exp_buff):
-        states.append(np.array(exp.state, copy=False))
-        actions.append(int(exp.action))
-        rewards.append(exp.reward)
-        if exp.new_state is not None:
-            not_done_idx.append(idx)
-            last_states.append(np.array(exp.new_state, copy=False))
-
-    rewards_np = np.array(rewards, dtype=np.float32)
-    if not_done_idx:
-        last_states_v = torch.FloatTensor(np.array(last_states, copy=False))
-        last_vals_v = net_values(last_states_v)
-        last_vals_np = last_vals_v.data.cpu().numpy()[:, 0]
-        last_vals_np *= GAMMA ** REWARD_STEPS
-        rewards_np[not_done_idx] += last_vals_np
-
-    ref_vals_v = torch.FloatTensor(rewards_np)
-    return ref_vals_v
-
-
-def set_seed(seed: int = 42) -> None:
-    """Function which sets seed"""
-    # env.seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    print(f"Random seed set as {seed}")
-
-
-if __name__ == "__main__":
-    env = gym.make("CartPole-v1")
-    # wandb.init(project="first-project")
-    set_seed(SEED)
-    net_agent = ActorNet(env.observation_space.shape[0])
-    net_val = ValueNet(env.observation_space.shape[0])
-    print(net_agent, '\n', net_val)
-
-    agent = AgentPolicyGradient(env, GAMMA, REWARD_STEPS)
-
-    optimizer_agent = optim.Adam(net_agent.parameters(), lr=LEARNING_RATE, eps=1e-3)
-    optimizer_val = optim.Adam(net_val.parameters(), lr=LEARNING_RATE, eps=1e-3)
-
-    total_rewards = []
-    step_rewards = []
-    exp_buffer = []
-    step_idx = 0
-    done_episodes = 0
-    reward_sum = 0.0
-    bs_smoothed = entropy = l_entropy = l_policy = l_total = None
-
-    batch_states, batch_actions, batch_scales = [], [], []
-
-    for step_idx in range(NUM_ITERATIONS):
-        done_reward, exp = agent.make_a_step(net_agent)
-        reward_sum += done_reward
-        baseline = reward_sum / (step_idx + 1)
-        batch_states.append(exp.state)
-        batch_actions.append(int(exp.action))
-        batch_scales.append(done_reward - baseline)
-        step_rewards.append(exp.reward)
-        exp_buffer.append(exp)
-
-        # handle new rewards
-        new_rewards = agent.get_total_reward()
-        if new_rewards:
-            done_episodes += 1
-            reward = new_rewards
-            total_rewards.append(reward)
-            mean_rewards = float(np.mean(total_rewards[-100:]))
-            # wandb.log({"mean_reward": mean_rewards, "reward": new_rewards})
-            print("%d: reward: %6.2f, mean_100: %6.2f, episodes: %d" % (
-                step_idx, reward, mean_rewards, done_episodes))
-            if mean_rewards > REWARD_MEAN_BOUND:
-                print("Solved in %d steps and %d episodes!" % (step_idx, done_episodes))
+            if done or truncated:
                 break
 
-        if len(batch_states) < BATCH_SIZE:
-            continue
+        # Log results
+        episode_rewards.append(episode_reward)
+        print(f"Episode {episode}, Total Reward: {episode_reward}")
 
-        states_v = torch.FloatTensor(batch_states)
-        batch_actions_t = torch.LongTensor(batch_actions)
-        batch_scale_v = torch.FloatTensor(batch_scales)
+        # Check for solving condition
+        if np.mean(episode_rewards[-100:]) > 475:
+            print(f"Environment solved in {episode} episodes!")
+            break
 
-        optimizer_agent.zero_grad()
-        optimizer_val.zero_grad()
-        logits_v, values_v = net_agent(states_v), net_val(states_v)
-        #TODO mozliwości, rewards, done_rewards, zdyskontowane albo nie
-        # trzeba ogarnąć te wartości jakoś
-        vref_vals = count_action_vals(exp_buffer, net_agent, net_val)
-        loss_values_v = F.mse_loss(values_v, vref_vals) #TODO REQUIRED TO GET ACTION VALUES, CANT USE batch_scales, these all only rewards for steps
+    env.close()
 
-        log_prob_v = F.log_softmax(logits_v, dim=1)
-        adv_v = vref_vals - values_v.detach()
-        log_prob_actions_v = adv_v * log_prob_v[range(BATCH_SIZE), batch_actions_t]
-        loss_policy_v = -log_prob_actions_v.mean()
-
-        prob_v = F.softmax(logits_v, dim=1)
-        entropy_loss_v = ENTROPY_BETA * (prob_v * log_prob_v).sum(dim=1).mean()
-
-        loss_policy_v.backward(retain_graph=True)
-
-        # apply entropy and value gradients
-        loss_v = entropy_loss_v + loss_values_v
-        loss_v.backward()
-        nn_utils.clip_grad_norm(net_agent.parameters(), CLIP_GRAD)
-        nn_utils.clip_grad_norm(net_val.parameters(), CLIP_GRAD)
-
-        optimizer_agent.step()
-        optimizer_val.step()
-
-        # wandb.log({"baseline": baseline, "baseline_entropy": entropy, 'loss_entropy': l_policy, 'loss_policy': l_total,
-        #            'grad_l2': grad_means / grad_count, 'grad_max': grad_max, 'batch_scales': bs_smoothed})
-
-        batch_states.clear()
-        batch_actions.clear()
-        batch_scales.clear()
-        step_rewards.clear()
-        exp_buffer.clear()
-
-    # wandb.finish()
+if __name__ == "__main__":
+    train()
