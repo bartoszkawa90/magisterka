@@ -46,11 +46,9 @@ class ValueNet(nn.Module):
 
 # pick up action with above distribution policy_pi
 def pick_sample(s, net, env):
-    with torch.no_grad():
         state = torch.tensor(np.array(s))
-        with torch.no_grad():
-            action_probs = F.softmax(net(state), dim=0)
-            action = choices(list(range(env.action_space.n)), weights=action_probs)[0]
+        action_probs = F.softmax(net(state), dim=0)
+        action = choices(list(range(env.action_space.n)), weights=action_probs)[0]
         return action
 
 
@@ -81,7 +79,7 @@ def batch(env, net, batch_size=BATCH_SIZE):
         a = pick_sample(s, net, env)
         s, r, term, trunc, _ = env.step(a)
         done = term  # or trunc
-        steps.append(Experience(s, a, r))
+        steps.append(Experience(s, a, r)) # to s to prawdopodobnie jest nowe s czyli s' ale powwino sie brac stare
         if done:
             FINAL_REWARD = sum([e.reward for e in steps])
             # print(f'  FINAL REWARD {FINAL_REWARD} ')
