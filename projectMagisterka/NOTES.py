@@ -1,117 +1,127 @@
-#!/usr/bin/env python3
-import gym
-import ptan
-import argparse
+import gymnasium as gym
 import numpy as np
-
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-
-GAMMA = 0.99
-LEARNING_RATE = 0.001
-ENTROPY_BETA = 0.01
-BATCH_SIZE = 8
-
-REWARD_STEPS = 10
+from torch.nn import functional as F
 
 
-class PGN(nn.Module):
-    def __init__(self, input_size, n_actions):
-        super(PGN, self).__init__()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.net = nn.Sequential(
-            nn.Linear(input_size, 128),
-            nn.ReLU(),
-            nn.Linear(128, n_actions)
-        )
+class ActorNet(nn.Module):
+    def __init__(self, hidden_dim=16):
+        super().__init__()
 
-    def forward(self, x):
-        return self.net(x)
+        self.hidden = nn.Linear(4, hidden_dim)
+        self.output = nn.Linear(hidden_dim, 2)
 
+    def forward(self, s):
+        outs = self.hidden(s)
+        outs = F.relu(outs)
+        logits = self.output(outs)
+        return logits
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--baseline", default=False, action='store_true', help="Enable mean baseline")
-    args = parser.parse_args()
+class ValueNet(nn.Module):
+    def __init__(self, hidden_dim=16):
+        super().__init__()
 
-    env = gym.make("CartPole-v0")
+        self.hidden = nn.Linear(4, hidden_dim)
+        self.output = nn.Linear(hidden_dim, 1)
 
-    net = PGN(env.observation_space.shape[0], env.action_space.n)
-    print(net)
+    def forward(self, s):
+        outs = self.hidden(s)
+        outs = F.relu(outs)
+        value = self.output(outs)
+        return value
 
-    agent = ptan.agent.PolicyAgent(net, preprocessor=ptan.agent.float32_preprocessor,
-                                   apply_softmax=True)
-    exp_source = ptan.experience.ExperienceSourceFirstLast(env, agent, gamma=GAMMA, steps_count=REWARD_STEPS)
-
-    optimizer = optim.Adam(net.parameters(), lr=LEARNING_RATE)
-
-    total_rewards = []
-    step_rewards = []
-    step_idx = 0
-    done_episodes = 0
-    reward_sum = 0.0
-
-    batch_states, batch_actions, batch_scales = [], [], []
-
-    for step_idx, exp in enumerate(exp_source):
-        reward_sum += exp.reward
-        print(f'reward {exp.reward} state {exp.state} action {exp.action}')
-        baseline = reward_sum / (step_idx + 1)
-        batch_states.append(exp.state)
-        batch_actions.append(int(exp.action))
-        if args.baseline:
-            batch_scales.append(exp.reward - baseline)
-        else:
-            batch_scales.append(exp.reward)
-
-        # handle new rewards
-        new_rewards = exp_source.pop_total_rewards()
-        if new_rewards:
-            done_episodes += 1
-            reward = new_rewards[0]
-            total_rewards.append(reward)
-            mean_rewards = float(np.mean(total_rewards[-100:]))
-            print("%d: reward: %6.2f, mean_100: %6.2f, episodes: %d" % (
-                step_idx, reward, mean_rewards, done_episodes))
-            if mean_rewards > 195:
-                print("Solved in %d steps and %d episodes!" % (step_idx, done_episodes))
-                break
-
-        if len(batch_states) < BATCH_SIZE:
-            continue
-
-        states_v = torch.FloatTensor(batch_states)
-        batch_actions_t = torch.LongTensor(batch_actions)
-        batch_scale_v = torch.FloatTensor(batch_scales)
-
-        optimizer.zero_grad()
-        logits_v = net(states_v)
-        log_prob_v = F.log_softmax(logits_v, dim=1)
-        log_p_a_v = log_prob_v[range(BATCH_SIZE), batch_actions_t]
-        log_prob_actions_v = batch_scale_v * log_p_a_v
-        loss_policy_v = -log_prob_actions_v.mean()
-
-        loss_policy_v.backward(retain_graph=True)
-        grads = np.concatenate([p.grad.data.numpy().flatten()
-                                for p in net.parameters()
-                                if p.grad is not None])
-
-        prob_v = F.softmax(logits_v, dim=1)
-        entropy_v = -(prob_v * log_prob_v).sum(dim=1).mean()
-        entropy_loss_v = -ENTROPY_BETA * entropy_v
-        entropy_loss_v.backward()
-        optimizer.step()
-
-        loss_v = loss_policy_v + entropy_loss_v
-
-        # calc KL-div
-        new_logits_v = net(states_v)
-        new_prob_v = F.softmax(new_logits_v, dim=1)
-        kl_div_v = -((new_prob_v / prob_v).log() * prob_v).sum(dim=1).mean()
+actor_func = ActorNet().to(device)
+value_func = ValueNet().to(device)
 
 
-        batch_states.clear()
-        batch_actions.clear()
-        batch_scales.clear()
+gamma = 0.99
+
+# pick up action with above distribution policy_pi
+def pick_sample(s):
+    with torch.no_grad():
+        #   --> size : (1, 4)
+        s_batch = np.expand_dims(s, axis=0)
+        s_batch = torch.tensor(s_batch, dtype=torch.float).to(device)
+        # Get logits from state
+        #   --> size : (1, 2)
+        logits = actor_func(s_batch)
+        #   --> size : (2)
+        logits = logits.squeeze(dim=0)
+        # From logits to probabilities
+        probs = F.softmax(logits, dim=-1)
+        # Pick up action's sample
+        a = torch.multinomial(probs, num_samples=1)
+        # Return
+        return a.tolist()[0]
+
+env = gym.make("CartPole-v1")
+reward_records = []
+opt1 = torch.optim.AdamW(value_func.parameters(), lr=0.001)
+opt2 = torch.optim.AdamW(actor_func.parameters(), lr=0.001)
+for i in range(1500):
+    #
+    # Run episode till done
+    #
+    done = False
+    states = []
+    actions = []
+    rewards = []
+    s, _ = env.reset()
+    while not done:
+        states.append(s.tolist())
+        a = pick_sample(s)
+        s, r, term, trunc, _ = env.step(a)
+        done = term or trunc
+        actions.append(a)
+        rewards.append(r)
+
+    #
+    # Get cumulative rewards
+    #
+    cum_rewards = np.zeros_like(rewards)
+    reward_len = len(rewards)
+    for j in reversed(range(reward_len)):
+        cum_rewards[j] = rewards[j] + (cum_rewards[j+1]*gamma if j+1 < reward_len else 0)
+
+    #
+    # Train (optimize parameters)
+    #
+
+    # Optimize value loss (Critic)
+    opt1.zero_grad()
+    states = torch.tensor(states, dtype=torch.float).to(device)
+    cum_rewards = torch.tensor(cum_rewards, dtype=torch.float).to(device)
+    values = value_func(states)
+    values = values.squeeze(dim=1)
+    vf_loss = F.mse_loss(
+        values,
+        cum_rewards,
+        reduction="none")
+    vf_loss.sum().backward()
+    opt1.step()
+
+    # Optimize policy loss (Actor)
+    with torch.no_grad():
+        values = value_func(states)
+    opt2.zero_grad()
+    actions = torch.tensor(actions, dtype=torch.int64).to(device)
+    advantages = cum_rewards - values
+    logits = actor_func(states)
+    log_probs = -F.cross_entropy(logits, actions, reduction="none")
+    pi_loss = -log_probs * advantages
+    pi_loss.sum().backward()
+    opt2.step()
+
+    # Output total rewards in episode (max 500)
+    print("Run episode{} with rewards {}".format(i, sum(rewards)), end="\r")
+    reward_records.append(sum(rewards))
+
+    # stop if reward mean > 475.0
+    if np.average(reward_records[-50:]) > 475.0:
+        break
+
+print("\nDone")
+env.close()

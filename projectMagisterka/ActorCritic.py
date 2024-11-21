@@ -1,21 +1,17 @@
 import gymnasium as gym
 import os
 import random
-from copy import deepcopy
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from random import choices
 from collections import namedtuple
-import torch.nn.utils as nn_utils
 
 
 GAMMA = 0.99
-NUMBER_OF_EPISODES = 1500
-BATCH_SIZE = 10
-CLIP_GRAD = 0.1
 ENTROPY_BETA = 0.01
+BATCH_SIZE = 10
 
 
 class ActorNet(nn.Module):
@@ -88,8 +84,8 @@ def main():
     episode_reward = 0.0
     idx = 0
     new_s = 0.0
+    s, _ = env.reset()
     while 1:
-        s, _ = env.reset()
         a = pick_sample(s, actor, env)
         new_s, r, done, _, _ = env.step(a)
         states.append(s)
@@ -102,48 +98,47 @@ def main():
         if len(states) < BATCH_SIZE:
             continue
 
+        states_t = torch.FloatTensor(states)
+        reward_t = torch.FloatTensor(rewards)
+        actions_t = torch.LongTensor(actions)
+        new_states_t = torch.FloatTensor(new_states)
+
+
         if done:
             R = 0
             reward_records.append(episode_reward)
-            episode_reward = 0
             s, _ = env.reset()
+            print(f' Episode {idx} with reward {episode_reward} and mean reward  {np.mean(reward_records[-50:])} ')
+            episode_reward = 0
         else:
-            R = critic(new_states[-1])
+            R = critic(new_states_t[-1])
 
-        R_values = len(state) * [0]
-        for ids, state, action, reward in enumerate(reversed(states), reversed(actions), reversed(rewards)):
+        R_values = []
+        for ids, (state, action, reward) in enumerate(zip(reversed(states), reversed(actions), reversed(rewards))):
             if ids == 0:
                 R_values.insert(0, reward + GAMMA*R)
             else:
                 R_values.insert(0, reward + GAMMA*R_values[ids-1])
 
-        # advantage = torch.FloatTensor(R_values) - critic(states).detach()
-
-        states_t = torch.FloatTensor(states)
-        reward_t = torch.FloatTensor(rewards)
-        actions_t = torch.LongTensor(actions)
         R_values_t = torch.FloatTensor(R_values)
 
-        # Optimize value loss (Critic)
+        # Simple but working optimization
         opt1.zero_grad()
-        values = actor(states_t)
-        vf_loss = F.mse_loss(
-            values.squeeze(dim=1),
-            R_values_t)
-        vf_loss.sum().backward()
-        opt1.step()
-
-        # Optimize policy loss (Actor)
-        with torch.no_grad():
-            values = critic(states_t)
         opt2.zero_grad()
-        advantages = R_values_t - values
-        logits = actor(states_t)
+        logits_v, value_v = actor(states_t), critic(states_t)
+        loss_value_v = F.mse_loss(value_v.squeeze(-1), R_values_t)
+        # apply value gradients
+        loss_value_v.backward()
 
-        log_probs = F.log_softmax(logits)
-        log_probs_actions = advantages * log_probs[range(len(actions_t)), actions_t]
-        loss_policy = -log_probs_actions.mean()
-        loss_policy.backward()
+        log_prob_v = F.log_softmax(logits_v, dim=1)
+        adv_v = R_values_t - value_v.detach()
+        log_prob_actions_v = adv_v * log_prob_v[range(BATCH_SIZE), actions_t]
+        loss_policy_v = -log_prob_actions_v.mean()
+
+        # apply entropy gradients
+        loss_policy_v.backward()
+        # optimize
+        opt1.step()
         opt2.step()
 
         states.clear()
@@ -152,11 +147,12 @@ def main():
         new_states.clear()
         R_values.clear()
 
+        idx += 1
         # Output total rewards in episode (max 500)
-        print("Run episode {} with rewards {}".format(iter, np.mean(reward_records[-50:])), end="\r")
+        print("Run episode {} with rewards {}".format(idx, np.mean(reward_records[-50:])), end="\r")
 
         # stop if reward mean > 475.0
-        if np.mean(reward_records[-50:]) > 475.0 or iter > 2000000:
+        if np.mean(reward_records[-50:]) > 475.0 or idx > 2000000:
             break
 
 
