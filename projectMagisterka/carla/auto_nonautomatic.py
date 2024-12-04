@@ -18,8 +18,8 @@ import time
 from datetime import datetime
 import math
 
-" Original "
-" Code for one car and multiple pedestrians walking "
+""" Car drives from point to point and by steering the wheel but is sometimes get stuck or fall into loop when car rides randomly
+        This needs to invertigated, may be connected to part of code where car checks distance from waypoint"""
 
 
 # important points
