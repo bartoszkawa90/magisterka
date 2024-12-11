@@ -25,7 +25,7 @@ basic_spawn_point = carla.Transform(
 
 def get_nearby_spawn_points(world, center_location, radius=100):
     """
-        Get some spawn points near chosen basic location
+    Get some spawn points near chosen basic location
     """
     map_spawn_points = world.get_map().get_spawn_points()
     nearby_spawn_points = [
