@@ -1,0 +1,30 @@
+
+##############################################################################################################################################
+
+ssh -Y plgbartoszkawa@ares.cyfronet.pl
+srun -N 1 --ntasks-per-node=1 -p plgrid -t 01:30:00 -A plgdyplomanci6-cpu --pty /bin/bash
+
+# pro-viz,  odpalane po zalogowaniu a nie po srun
+module avail pro-viz - pokazuje czy są jakieś wersje pro-viz
+module load pro-viz - zaladuje pro-viz
+pro-viz start -N 1 -P 1 -p plgrid -A plgdyplomanci6-cpu 00:20:00 - tak startuje jakas przykladowa sesja
+
+NA ATENE      pro-viz start -N 1 -n 4 -A plgdyplomanci6-gpu-a100 -p plgrid-gpu-a100 -t 00:40:00   
+
+pro-viz list - lista sesji
+pro-viz password 14247186 - tak pokaze linki zeby wejsc do sesji przez przegladarke
+
+# współdzielony katalog
+/net/pr2/projects/plgrid/plggwie/plgbartoszkawa
+
+
+##############################################################################################################################################
+
+# odpalanie wezla na gpu na athenie
+srun -A plgdyplomanci6-gpu-a100 --partition plgrid-gpu-a100 --time 00:20:00 -N 1 --ntasks-per-node 1 --cpus-per-task 4 --mem 40GB --gpus=1 -C memfs --pty /bin/bash
+
+# odpalanie kontenera w tle (nie w tle bez & trzeba)
+apptainer exec --nv carla_0.9.15.sif /home/carla/CarlaUE4.sh  -RenderOffScreen -nosound --carla-server &
+
+# tunel do maszyny (Trzeba zmienić address na taki jaki ma węzeł obliczeniowy  -->  hostname -i) 
+TARGET_IP="172.23.16.10"; ssh -o ServerAliveInterval=300 -N -L 2000:$TARGET_IP:2000 -L 2001:$TARGET_IP:2001 -L 2002:$TARGET_IP:2002 user@ip
